@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}</style>
+<title>QR Chunk Scanner</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Layout: scanner on the left, collected text and the Done controls on the right; one column on a phone. */
+  :root {
+    --bg: #EEF1F4;
+    --surface: #FFFFFF;
+    --surface-2: #E4E9EE;
+    --fg: #13202B;
+    --muted: #58697A;
+    --line: #CFD7DF;
+    --accent: #0B6E7A;
+    --accent-fg: #FFFFFF;
+    --ok: #1B7F4B;
+    --warn: #A55B00;
+    --bad: #B3261E;
+    --stage: #0E171E;
+    --stage-fg: #E8F0F5;
+    --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-data: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0C1319;
+      --surface: #141E26;
+      --surface-2: #1C2933;
+      --fg: #E6EEF4;
+      --muted: #8FA3B3;
+      --line: #27363F;
+      --accent: #4CC3CF;
+      --accent-fg: #06242A;
+      --ok: #5BD08F;
+      --warn: #F0A94A;
+      --bad: #FF8A80;
+      --stage: #070C10;
+      --stage-fg: #E8F0F5;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0C1319;
+    --surface: #141E26;
+    --surface-2: #1C2933;
+    --fg: #E6EEF4;
+    --muted: #8FA3B3;
+    --line: #27363F;
+    --accent: #4CC3CF;
+    --accent-fg: #06242A;
+    --ok: #5BD08F;
+    --warn: #F0A94A;
+    --bad: #FF8A80;
+    --stage: #070C10;
+    --stage-fg: #E8F0F5;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.5;
+    padding-block: 20px 40px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .app { max-width: 1040px; margin: 0 auto; display: grid; gap: 20px; }
+  header h1 { margin: 0 0 4px; font-size: 24px; line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+  header p { margin: 0; color: var(--muted); max-width: 62ch; }
+
+  .layout { display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr); align-items: start; }
+  @media (min-width: 900px) { .layout { grid-template-columns: minmax(0, 460px) minmax(0, 1fr); } }
+  .col { display: grid; gap: 16px; min-width: 0; }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px; display: grid; gap: 14px; min-width: 0; }
+  .panel h2 { margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+
+  /* Scanner stage */
+  .stage { position: relative; aspect-ratio: 4 / 3; max-width: 100%; background: var(--stage); border-radius: 6px; overflow: hidden; }
+  .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .stage::after { content: ""; position: absolute; inset: 0; background: var(--ok); opacity: 0; transition: opacity .4s; pointer-events: none; }
+  .stage.hit::after { opacity: .3; transition: none; }
+  .stage.dup::after { background: var(--warn); opacity: .3; transition: none; }
+  .corner { position: absolute; width: 34px; height: 34px; border: 3px solid var(--stage-fg); opacity: .85; pointer-events: none; transition: border-color .2s; }
+  .corner.tl { top: 14%; left: 14%; border-right: 0; border-bottom: 0; }
+  .corner.tr { top: 14%; right: 14%; border-left: 0; border-bottom: 0; }
+  .corner.bl { bottom: 14%; left: 14%; border-right: 0; border-top: 0; }
+  .corner.br { bottom: 14%; right: 14%; border-left: 0; border-top: 0; }
+  .stage.hit .corner { border-color: var(--ok); }
+  .stage.dup .corner { border-color: var(--warn); }
+  .idle { position: absolute; inset: 0; display: grid; place-content: center; gap: 6px; text-align: center; color: var(--stage-fg); padding: 24px; }
+  .idle strong { font-weight: 600; font-size: 16px; }
+  .idle span { opacity: .75; font-size: 14px; max-width: 30ch; }
+
+  .status { display: flex; gap: 10px; align-items: flex-start; min-height: 44px; padding: 10px 12px; background: var(--surface-2); border-radius: 6px; font-size: 14px; }
+  .status::before { content: ""; flex: none; width: 10px; height: 10px; margin-top: 6px; border-radius: 50%; background: var(--muted); }
+  .status[data-tone="ok"]::before { background: var(--ok); }
+  .status[data-tone="warn"]::before { background: var(--warn); }
+  .status[data-tone="bad"]::before { background: var(--bad); }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .btn { min-height: 44px; padding: 0 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--fg); font: 500 15px/1 var(--font-body); cursor: pointer; }
+  .btn:hover { background: var(--surface-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.quiet { border-color: transparent; background: transparent; color: var(--muted); min-height: 36px; padding: 0 10px; }
+  .btn.quiet:hover { background: var(--surface-2); color: var(--fg); }
+  .btn.danger { color: var(--bad); }
+  .btn:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hint { margin: 0; font-size: 13px; color: var(--muted); }
+
+  /* Collected */
+  .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stat { padding: 0 12px; border-left: 1px solid var(--line); min-width: 0; }
+  .stat:first-child { padding-left: 0; border-left: 0; }
+  .stat b { display: block; font: 500 22px/1.2 var(--font-data); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .stat span { font-size: 12px; color: var(--muted); }
+
+  .finish { display: grid; gap: 8px; }
+  .finish label { font-size: 13px; font-weight: 500; }
+  .finish-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .finish-row input { flex: 1 1 180px; min-width: 0; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: 400 14px var(--font-data); }
+  .finish-row .btn { flex: 0 0 auto; min-width: 96px; }
+
+  .result { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); min-width: 0; }
+  .result p { margin: 0; overflow-wrap: anywhere; }
+  .result[data-tone="ok"] .headline { color: var(--ok); }
+  .result[data-tone="bad"] .headline { color: var(--bad); }
+  .result .headline { font-weight: 600; }
+  .result img { max-width: 100%; max-height: 220px; justify-self: start; border-radius: 4px; border: 1px solid var(--line); background: var(--surface); }
+  .result .actions { margin-top: 2px; }
+
+  .list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .list-head h2 { margin: 0; }
+  ol.chunks { list-style: none; margin: 0; padding: 0; }
+  ol.chunks li { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+  ol.chunks .no { font: 500 13px var(--font-data); color: var(--accent); min-width: 3ch; }
+  ol.chunks .len { font: 400 12px var(--font-data); color: var(--muted); font-variant-numeric: tabular-nums; }
+  ol.chunks .txt { font: 400 13px var(--font-data); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  ol.chunks .del { width: 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+  ol.chunks .del:hover { background: var(--surface-2); color: var(--bad); }
+  .empty { margin: 0; padding: 18px 0 6px; color: var(--muted); border-top: 1px solid var(--line); }
+
+  details.raw summary { cursor: pointer; font-size: 13px; color: var(--muted); padding: 6px 0; }
+  details.raw textarea { width: 100%; min-height: 120px; max-height: 260px; margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: 400 12px/1.5 var(--font-data); resize: vertical; overflow-wrap: anywhere; }
+
+  @media (prefers-reduced-motion: reduce) { .stage::after, .corner { transition: none; } }
+</style>
+
+<div class="app">
+  <header>
+    <h1>QR Chunk Scanner</h1>
+    <p>Scan a series of QR codes. Each code's text is added to the end of one long string, in the order you scan. Press Done to read that string as base64 and save it as a file.</p>
+  </header>
+
+  <div class="layout">
+    <div class="col">
+      <section class="panel" aria-label="Scanner">
+        <h2>Scanner</h2>
+        <div class="stage" id="stage">
+          <video id="video" playsinline muted></video>
+          <span class="corner tl"></span><span class="corner tr"></span><span class="corner bl"></span><span class="corner br"></span>
+          <div class="idle" id="idle">
+            <strong>Camera is off</strong>
+            <span>Start the camera, or add photos of QR codes.</span>
+          </div>
+        </div>
+        <div class="status" id="status" role="status" aria-live="polite" data-tone="idle">Ready. A code that was already read is skipped.</div>
+        <div class="actions">
+          <button class="btn primary" id="camBtn" type="button">Start camera</button>
+          <button class="btn" id="photoBtn" type="button">Take photo</button>
+          <button class="btn" id="filesBtn" type="button">Choose images</button>
+        </div>
+        <input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
+        <input id="filesInput" type="file" accept="image/*" multiple hidden>
+        <p class="hint">Dense codes read best with the camera 15 to 25 cm away and the code filling most of the frame.</p>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel" aria-label="Collected text">
+        <h2>Collected text</h2>
+        <div class="stats">
+          <div class="stat"><b id="statCount">0</b><span>codes read</span></div>
+          <div class="stat"><b id="statChars">0</b><span>characters</span></div>
+          <div class="stat"><b id="statSize">0 B</b><span>file size when decoded</span></div>
+        </div>
+
+        <div class="finish">
+          <label for="fileName">File name</label>
+          <div class="finish-row">
+            <input id="fileName" type="text" placeholder="scanned-file" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button class="btn primary" id="doneBtn" type="button">Done</button>
+          </div>
+          <p class="hint">Without an extension, one is picked from the file's contents.</p>
+        </div>
+
+        <div class="result" id="result" hidden></div>
+
+        <div>
+          <div class="list-head">
+            <h2>Codes read, latest first</h2>
+            <button class="btn quiet" id="clearBtn" type="button">Clear all</button>
+          </div>
+          <ol class="chunks" id="chunkList"></ol>
+          <p class="empty" id="emptyNote">Nothing scanned yet.</p>
+          <button class="btn quiet" id="moreBtn" type="button" hidden></button>
+        </div>
+
+        <details class="raw" id="raw">
+          <summary>Combined text</summary>
+          <textarea id="rawText" readonly spellcheck="false"></textarea>
+          <div class="actions"><button class="btn quiet" id="copyBtn" type="button">Copy text</button></div>
+        </details>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  /*CORE*/
+  // Pure helpers: they take the chunk list as an argument so they can be tested without a page.
+  function cleanPart(s, first) {
+    if (first) s = s.replace(/^\s*data:[^,]*?;base64,/i, '');
+    return s.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  }
+  function joinedClean(chunks) {
+    var parts = [];
+    for (var i = 0; i < chunks.length; i++) parts.push(cleanPart(chunks[i], i === 0));
+    return parts.join('');
+  }
+  function findProblem(chunks) {
+    for (var i = 0; i < chunks.length; i++) {
+      var c = cleanPart(chunks[i], i === 0);
+      var m = /[^A-Za-z0-9+\/=]/.exec(c);
+      if (m) return 'Code #' + (i + 1) + ' contains "' + m[0] + '", which is not a base64 character. It may be a different kind of QR code. Remove it with the X button and press Done again.';
+      var eq = c.indexOf('=');
+      if (eq !== -1 && /[^=]/.test(c.slice(eq))) return 'Code #' + (i + 1) + ' has padding (=) in the middle of its text.';
+      if (eq !== -1) {
+        for (var j = i + 1; j < chunks.length; j++) {
+          if (cleanPart(chunks[j], false).length) return 'Code #' + (i + 1) + ' ends with padding (=) but more codes follow. The codes may have been scanned out of order.';
+        }
+      }
+    }
+    return null;
+  }
+  function decodeAll(chunks) {
+    var s = joinedClean(chunks).replace(/=+$/, '');
+    if (s.length % 4 === 1) throw new Error('The text is the wrong length for base64, so at least one code is probably missing.');
+    while (s.length % 4) s += '=';
+    var bin = atob(s);
+    var u8 = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+  }
+  var SIGS = [
+    { b: [0x25, 0x50, 0x44, 0x46], ext: 'pdf', mime: 'application/pdf', label: 'PDF document' },
+    { b: [0x89, 0x50, 0x4E, 0x47], ext: 'png', mime: 'image/png', label: 'PNG image' },
+    { b: [0xFF, 0xD8, 0xFF], ext: 'jpg', mime: 'image/jpeg', label: 'JPEG image' },
+    { b: [0x47, 0x49, 0x46, 0x38], ext: 'gif', mime: 'image/gif', label: 'GIF image' },
+    { b: [0x50, 0x4B, 0x03, 0x04], ext: 'zip', mime: 'application/zip', label: 'ZIP archive (also .docx, .xlsx, .apk)' },
+    { b: [0x1F, 0x8B], ext: 'gz', mime: 'application/gzip', label: 'gzip archive' }
+  ];
+  function startsWith(u8, sig, offset) {
+    for (var i = 0; i < sig.length; i++) if (u8[(offset || 0) + i] !== sig[i]) return false;
+    return true;
+  }
+  function sniff(u8) {
+    for (var i = 0; i < SIGS.length; i++) if (startsWith(u8, SIGS[i].b, 0)) return SIGS[i];
+    if (startsWith(u8, [0x52, 0x49, 0x46, 0x46], 0) && startsWith(u8, [0x57, 0x45, 0x42, 0x50], 8)) {
+      return { ext: 'webp', mime: 'image/webp', label: 'WebP image' };
+    }
+    try {
+      var t = new TextDecoder('utf-8', { fatal: true }).decode(u8.subarray(0, Math.min(u8.length, 4000)), { stream: true });
+      if (!/[\x00-\x08\x0E-\x1F]/.test(t)) return { ext: 'txt', mime: 'text/plain', label: 'Plain text' };
+    } catch (e) { /* not text */ }
+    return { ext: 'bin', mime: 'application/octet-stream', label: 'Unknown binary data' };
+  }
+  /*END CORE*/
+
+  var $ = function (id) { return document.getElementById(id); };
+  var STORE = 'qr-chunk-scanner.v1';
+  var PAGE_SIZE = 8;
+
+  var chunks = [];
+  var seen = new Set();
+  var showAll = false;
+  var stream = null, scanning = false, raf = 0, lastTick = 0, busy = false;
+  var detector = null, wakeLock = null, lastDupMsg = 0, flashTimer = 0, clearTimer = 0;
+  var lastBlob = null, lastName = '', previewUrl = '';
+
+  var stage = $('stage'), video = $('video'), idle = $('idle');
+  var vcv = document.createElement('canvas');
+  var vctx = vcv.getContext('2d', { willReadFrequently: true });
+  var icv = document.createElement('canvas');
+  var ictx = icv.getContext('2d', { willReadFrequently: true });
+
+  function fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(2) + ' MB';
+  }
+  function setStatus(text, tone) {
+    var el = $('status');
+    el.textContent = text;
+    el.setAttribute('data-tone', tone || 'idle');
+  }
+  function flash(kind) {
+    stage.classList.remove('hit', 'dup');
+    void stage.offsetWidth;
+    stage.classList.add(kind);
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(function () { stage.classList.remove('hit', 'dup'); }, 120);
+  }
+
+  /* ---------- storage (per viewer convenience only) ---------- */
+  function persist() { try { localStorage.setItem(STORE, JSON.stringify(chunks)); } catch (e) {} }
+  function restore() {
+    try {
+      var raw = localStorage.getItem(STORE);
+      if (!raw) return 0;
+      var a = JSON.parse(raw);
+      if (!Array.isArray(a)) return 0;
+      a.forEach(function (t) { if (typeof t === 'string' && t && !seen.has(t)) { seen.add(t); chunks.push(t); } });
+    } catch (e) {}
+    return chunks.length;
+  }
+
+  /* ---------- collected list ---------- */
+  function addChunk(text) {
+    if (!text) return 'empty';
+    if (seen.has(text)) return 'dup';
+    seen.add(text);
+    chunks.push(text);
+    persist();
+    render();
+    return 'new';
+  }
+  function removeChunk(i) {
+    var gone = chunks.splice(i, 1)[0];
+    seen.delete(gone);
+    persist();
+    hideResult();
+    render();
+  }
+  function preview(t) {
+    t = t.replace(/\s+/g, ' ');
+    return t.length > 30 ? t.slice(0, 18) + '…' + t.slice(-8) : t;
+  }
+  var X_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg>';
+
+  function render() {
+    var total = 0, chars = 0, lastTail = '';
+    for (var i = 0; i < chunks.length; i++) {
+      chars += chunks[i].length;
+      var c = cleanPart(chunks[i], i === 0);
+      total += c.length;
+      if (c.length) lastTail = c;
+    }
+    var pad = Math.min(2, (/=+$/.exec(lastTail) || [''])[0].length);
+    $('statCount').textContent = chunks.length.toLocaleString();
+    $('statChars').textContent = chars.toLocaleString();
+    $('statSize').textContent = fmtBytes(Math.max(0, Math.floor((total - pad) * 3 / 4)));
+
+    var list = $('chunkList');
+    list.textContent = '';
+    var from = chunks.length - 1;
+    var to = showAll ? 0 : Math.max(0, chunks.length - PAGE_SIZE);
+    var frag = document.createDocumentFragment();
+    for (var k = from; k >= to; k--) {
+      (function (idx) {
+        var li = document.createElement('li');
+        var no = document.createElement('span'); no.className = 'no'; no.textContent = '#' + (idx + 1);
+        var len = document.createElement('span'); len.className = 'len'; len.textContent = chunks[idx].length.toLocaleString();
+        var txt = document.createElement('span'); txt.className = 'txt'; txt.textContent = preview(chunks[idx]);
+        var del = document.createElement('button');
+        del.type = 'button'; del.className = 'del'; del.innerHTML = X_ICON;
+        del.setAttribute('aria-label', 'Remove code ' + (idx + 1));
+        del.addEventListener('click', function () { removeChunk(idx); });
+        li.appendChild(no); li.appendChild(len); li.appendChild(txt); li.appendChild(del);
+        frag.appendChild(li);
+      })(k);
+    }
+    list.appendChild(frag);
+    $('emptyNote').hidden = chunks.length > 0;
+    $('clearBtn').hidden = chunks.length === 0;
+
+    var more = $('moreBtn');
+    if (chunks.length > PAGE_SIZE) {
+      more.hidden = false;
+      more.textContent = showAll ? 'Show latest ' + PAGE_SIZE + ' only' : 'Show all ' + chunks.length;
+    } else {
+      more.hidden = true;
+    }
+    if ($('raw').open) $('rawText').value = chunks.join('');
+  }
+
+  /* ---------- decoding images and video frames ---------- */
+  async function initDetector() {
+    try {
+      if ('BarcodeDetector' in window) {
+        var f = await BarcodeDetector.getSupportedFormats();
+        if (f.indexOf('qr_code') !== -1) detector = new BarcodeDetector({ formats: ['qr_code'] });
+      }
+    } catch (e) { detector = null; }
+    if (!detector && !window.jsQR) {
+      setStatus('The QR decoding library did not load. Check your connection and reload the page.', 'bad');
+    }
+  }
+  async function detectCanvas(cv, ctx, thorough) {
+    var out = [];
+    if (detector) {
+      try {
+        var r = await detector.detect(cv);
+        for (var i = 0; i < r.length; i++) if (r[i].rawValue) out.push(r[i].rawValue);
+      } catch (e) {}
+    }
+    if (!out.length && window.jsQR) {
+      var d = ctx.getImageData(0, 0, cv.width, cv.height);
+      var q = window.jsQR(d.data, d.width, d.height, { inversionAttempts: thorough ? 'attemptBoth' : 'dontInvert' });
+      if (q) {
+        if (q.data) out.push(q.data);
+        else if (q.binaryData && q.binaryData.length) {
+          var s = ''; for (var b = 0; b < q.binaryData.length; b++) s += String.fromCharCode(q.binaryData[b]);
+          out.push(s);
+        }
+      }
+    }
+    return out;
+  }
+
+  function handleLive(values) {
+    var added = 0, dups = 0;
+    values.forEach(function (v) {
+      var r = addChunk(v);
+      if (r === 'new') added++; else if (r === 'dup') dups++;
+    });
+    var now = Date.now();
+    if (added) {
+      flash('hit');
+      try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
+      var n = chunks.length;
+      setStatus(added > 1 ? 'Read ' + added + ' codes. ' + n + ' in total.' : 'Read code #' + n + ' (' + chunks[n - 1].length.toLocaleString() + ' characters). Aim at the next one.', 'ok');
+      hideResult();
+    } else if (dups && now - lastDupMsg > 800) {
+      lastDupMsg = now;
+      flash('dup');
+      setStatus('Already read. Move to the next code.', 'warn');
+    }
+  }
+
+  async function tick(ts) {
+    if (!scanning) return;
+    raf = requestAnimationFrame(tick);
+    if (busy || ts - lastTick < 120 || video.readyState < 2 || !video.videoWidth) return;
+    busy = true; lastTick = ts;
+    try {
+      var vw = video.videoWidth, vh = video.videoHeight;
+      var scale = Math.min(1, 1280 / Math.max(vw, vh));
+      var w = Math.round(vw * scale), h = Math.round(vh * scale);
+      if (vcv.width !== w || vcv.height !== h) { vcv.width = w; vcv.height = h; }
+      vctx.drawImage(video, 0, 0, w, h);
+      var found = await detectCanvas(vcv, vctx, false);
+      if (found.length) handleLive(found);
+    } catch (e) {
+    } finally { busy = false; }
+  }
+
+  async function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus('This view cannot use the camera. Use Take photo or Choose images, or open the standalone copy of this page.', 'bad');
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+      scanning = true;
+      idle.hidden = true;
+      $('camBtn').textContent = 'Stop camera';
+      setStatus('Looking for a QR code…', 'idle');
+      try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+      raf = requestAnimationFrame(tick);
+    } catch (e) {
+      stopCamera();
+      var blocked = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+      setStatus(blocked
+        ? 'Camera access was blocked. Use Take photo or Choose images instead, or allow the camera for this page and try again.'
+        : 'The camera could not be started (' + ((e && e.name) || 'unknown error') + '). Use Take photo or Choose images instead.', 'bad');
+    }
+  }
+  function stopCamera() {
+    scanning = false;
+    cancelAnimationFrame(raf);
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    video.srcObject = null;
+    idle.hidden = false;
+    $('camBtn').textContent = 'Start camera';
+    try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) {}
+  }
+
+  async function loadBitmap(file) {
+    if (window.createImageBitmap) {
+      try { return await createImageBitmap(file); } catch (e) {}
+    }
+    return await new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('unreadable image')); };
+      img.src = url;
+    });
+  }
+  async function scanFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return;
+    setStatus('Reading ' + files.length + (files.length === 1 ? ' image' : ' images') + '…', 'idle');
+    var added = 0, dups = 0, none = [];
+    for (var f = 0; f < files.length; f++) {
+      var values = [];
+      try {
+        var bmp = await loadBitmap(files[f]);
+        var sw = bmp.width || bmp.naturalWidth, sh = bmp.height || bmp.naturalHeight;
+        var limits = [2400, 1400, 800];
+        for (var l = 0; l < limits.length && !values.length; l++) {
+          var scale = Math.min(1, limits[l] / Math.max(sw, sh));
+          icv.width = Math.round(sw * scale); icv.height = Math.round(sh * scale);
+          ictx.drawImage(bmp, 0, 0, icv.width, icv.height);
+          values = await detectCanvas(icv, ictx, true);
+        }
+        if (bmp.close) bmp.close();
+      } catch (e) { values = []; }
+      if (!values.length) { none.push(files[f].name || ('image ' + (f + 1))); continue; }
+      values.forEach(function (v) {
+        var r = addChunk(v);
+        if (r === 'new') added++; else if (r === 'dup') dups++;
+      });
+    }
+    var parts = [];
+    parts.push(added ? 'Added ' + added + (added === 1 ? ' code.' : ' codes.') : 'No new codes added.');
+    if (dups) parts.push(dups + ' already read, skipped.');
+    if (none.length) parts.push('No readable QR code in ' + none.slice(0, 3).join(', ') + (none.length > 3 ? ' and ' + (none.length - 3) + ' more' : '') + '.');
+    setStatus(parts.join(' '), none.length && !added ? 'bad' : (added ? 'ok' : 'warn'));
+    if (added) hideResult();
+  }
+
+  /* ---------- Done: build and save the file ---------- */
+  function hideResult() {
+    $('result').hidden = true;
+  }
+  function showResult(tone, headline, detail, blob, kind) {
+    var el = $('result');
+    el.setAttribute('data-tone', tone);
+    el.textContent = '';
+    if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = ''; }
+    var h = document.createElement('p'); h.className = 'headline'; h.textContent = headline; el.appendChild(h);
+    if (detail) { var d = document.createElement('p'); d.textContent = detail; el.appendChild(d); }
+    if (blob && kind && /^image\/(png|jpeg|gif|webp)$/.test(kind.mime)) {
+      previewUrl = URL.createObjectURL(blob);
+      var img = document.createElement('img'); img.src = previewUrl; img.alt = 'Preview of the decoded image';
+      el.appendChild(img);
+    }
+    if (blob) {
+      var row = document.createElement('div'); row.className = 'actions';
+      var save = document.createElement('button'); save.type = 'button'; save.className = 'btn primary'; save.textContent = 'Save file again';
+      save.addEventListener('click', function () { saveBlob(lastName, lastBlob); });
+      var keep = document.createElement('button'); keep.type = 'button'; keep.className = 'btn'; keep.textContent = 'Keep scanning';
+      keep.addEventListener('click', hideResult);
+      row.appendChild(save); row.appendChild(keep); el.appendChild(row);
+    }
+    el.hidden = false;
+  }
+
+  async function saveBlob(name, blob) {
+    var dl = null;
+    try { if (window.claude && window.claude.use) dl = await window.claude.use('downloads'); } catch (e) { dl = null; }
+    if (dl) {
+      try {
+        await dl.save({ filename: name, data: blob });
+        setStatus('Saved ' + name + '.', 'ok');
+        return;
+      } catch (e) {
+        var code = e && e.code;
+        if (code === 'declined') { setStatus('Save cancelled. Press Save file again when you are ready.', 'warn'); return; }
+        if (code === 'rejected_extension' || code === 'extension_not_enabled') {
+          setStatus('This view can only save common file types (pdf, png, jpg, zip, txt, csv, docx, xlsx and similar), so "' + name + '" was not saved. Type a file name with one of those extensions, or open the standalone copy of this page to save any type.', 'bad');
+          return;
+        }
+        if (code && code !== 'unavailable' && code !== 'not_granted' && code !== 'capability_disabled' && code !== 'capability_removed') {
+          setStatus('The file could not be saved (' + code + ').', 'bad');
+          return;
+        }
+      }
+    }
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 15000);
+    setStatus('Download started for ' + name + '.', 'ok');
+  }
+
+  async function finish() {
+    stopCamera();
+    if (!chunks.length) { showResult('bad', 'Nothing to convert yet.', 'Scan at least one QR code first.'); return; }
+    var problem = findProblem(chunks);
+    if (problem) { showResult('bad', 'The text is not valid base64.', problem); return; }
+    var u8;
+    try { u8 = decodeAll(chunks); }
+    catch (e) { showResult('bad', 'The text could not be decoded.', e && e.message ? e.message : 'Decoding failed.'); return; }
+    if (!u8.length) { showResult('bad', 'The decoded file is empty.', 'The scanned text has no data in it.'); return; }
+    var kind = sniff(u8);
+    var name = $('fileName').value.trim().replace(/[\\\/:*?"<>|\u0000-\u001F]+/g, '_') || 'scanned-file';
+    if (!/\.[A-Za-z0-9]{1,8}$/.test(name)) name += '.' + kind.ext;
+    var blob = new Blob([u8], { type: kind.mime });
+    lastBlob = blob; lastName = name;
+    showResult('ok', 'Built ' + name, fmtBytes(u8.length) + ' from ' + chunks.length + (chunks.length === 1 ? ' code' : ' codes') + '. Looks like: ' + kind.label + '.', blob, kind);
+    await saveBlob(name, blob);
+  }
+
+  /* ---------- wiring ---------- */
+  $('camBtn').addEventListener('click', function () { if (scanning) { stopCamera(); setStatus('Camera stopped.', 'idle'); } else startCamera(); });
+  $('photoBtn').addEventListener('click', function () { $('photoInput').click(); });
+  $('filesBtn').addEventListener('click', function () { $('filesInput').click(); });
+  $('photoInput').addEventListener('change', function (e) { var f = e.target.files; scanFiles(f).then(function () { e.target.value = ''; }); });
+  $('filesInput').addEventListener('change', function (e) { var f = e.target.files; scanFiles(f).then(function () { e.target.value = ''; }); });
+  $('doneBtn').addEventListener('click', finish);
+  $('moreBtn').addEventListener('click', function () { showAll = !showAll; render(); });
+  $('clearBtn').addEventListener('click', function () {
+    var b = $('clearBtn');
+    if (b.getAttribute('data-armed') === '1') {
+      clearTimeout(clearTimer);
+      b.removeAttribute('data-armed'); b.classList.remove('danger'); b.textContent = 'Clear all';
+      chunks = []; seen = new Set(); showAll = false; persist(); hideResult(); render();
+      setStatus('Cleared. Ready for a new set of codes.', 'idle');
+    } else {
+      b.setAttribute('data-armed', '1'); b.classList.add('danger'); b.textContent = 'Tap again to clear';
+      clearTimer = setTimeout(function () { b.removeAttribute('data-armed'); b.classList.remove('danger'); b.textContent = 'Clear all'; }, 3000);
+    }
+  });
+  $('raw').addEventListener('toggle', function () { if ($('raw').open) $('rawText').value = chunks.join(''); });
+  $('copyBtn').addEventListener('click', function () {
+    var txt = chunks.join('');
+    var ta = $('rawText');
+    function fallback() { ta.value = txt; ta.focus(); ta.select(); try { document.execCommand('copy'); } catch (e) {} setStatus('Text selected. Copy it with your keyboard if it did not copy.', 'idle'); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(function () { setStatus('Copied ' + txt.length.toLocaleString() + ' characters.', 'ok'); }, fallback);
+    } else fallback();
+  });
+  window.addEventListener('pagehide', stopCamera);
+
+  var restored = restore();
+  render();
+  if (restored) setStatus('Restored ' + restored + (restored === 1 ? ' code' : ' codes') + ' from your last session. Clear all starts over.', 'idle');
+  initDetector();
+})();
+</script>
+
+</body></html>
