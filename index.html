@@ -1,3 +1,4 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}</style>
 <title>QR Chunk Scanner</title>
@@ -150,6 +151,9 @@
   details.raw summary { cursor: pointer; font-size: 13px; color: var(--muted); padding: 6px 0; }
   details.raw textarea { width: 100%; min-height: 120px; max-height: 260px; margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: 400 12px/1.5 var(--font-data); resize: vertical; overflow-wrap: anywhere; }
 
+  .steps { margin: 6px 0; padding-left: 22px; font-size: 13px; display: grid; gap: 6px; }
+  .steps code { font: 400 12px var(--font-data); background: var(--surface-2); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+
   @media (prefers-reduced-motion: reduce) { .stage::after, .corner { transition: none; } }
 </style>
 
@@ -180,6 +184,17 @@
         <input id="photoInput" type="file" accept="image/*" capture="environment" hidden>
         <input id="filesInput" type="file" accept="image/*" multiple hidden>
         <p class="hint">Dense codes read best with the camera 15 to 25 cm away and the code filling most of the frame.</p>
+        <details class="raw" id="camHelp" hidden>
+          <summary>Get live camera scanning when the file is opened from Downloads</summary>
+          <p class="hint">Chrome on Android does not allow camera access for a page opened from a downloaded file (a content:// address). The page cannot change that. Serve it from your phone instead:</p>
+          <ol class="steps">
+            <li>Install Termux from F-Droid and open it.</li>
+            <li>Run <code>termux-setup-storage</code> and allow storage access.</li>
+            <li>Run <code>pkg install python</code>, then <code>cd ~/storage/downloads</code>, then <code>python -m http.server 8000</code>.</li>
+            <li>In Chrome, open <code>http://localhost:8000/qr-chunk-scanner.html</code> and tap Allow when asked for the camera.</li>
+          </ol>
+          <p class="hint">Until then, Take photo opens your camera app and reads one code per photo.</p>
+        </details>
       </section>
     </div>
 
@@ -315,6 +330,36 @@
     el.textContent = text;
     el.setAttribute('data-tone', tone || 'idle');
   }
+  /* ---------- beep on a successful read ---------- */
+  var audioCtx = null;
+  function unlockAudio() {
+    // Browsers only allow sound after a tap, so this is called from the button handlers.
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!audioCtx) audioCtx = new AC();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } catch (e) {}
+  }
+  function beep() {
+    try {
+      if (!audioCtx) unlockAudio();
+      if (!audioCtx) return;
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      var t = audioCtx.currentTime;
+      var osc = audioCtx.createOscillator();
+      var gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1200, t);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.35, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.15);
+    } catch (e) {}
+  }
   function flash(kind) {
     stage.classList.remove('hit', 'dup');
     void stage.offsetWidth;
@@ -448,6 +493,7 @@
     var now = Date.now();
     if (added) {
       flash('hit');
+      beep();
       try { if (navigator.vibrate) navigator.vibrate(30); } catch (e) {}
       var n = chunks.length;
       setStatus(added > 1 ? 'Read ' + added + ' codes. ' + n + ' in total.' : 'Read code #' + n + ' (' + chunks[n - 1].length.toLocaleString() + ' characters). Aim at the next one.', 'ok');
@@ -476,16 +522,52 @@
     } finally { busy = false; }
   }
 
-  async function startCamera() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setStatus('This view cannot use the camera. Use Take photo or Choose images, or open the standalone copy of this page.', 'bad');
-      return;
+  // Explains why the camera is unavailable, based on how the page was opened.
+  function cameraHelp(e) {
+    var name = (e && e.name) || '';
+    var framed = false;
+    try { framed = window.top !== window.self; } catch (x) { framed = true; }
+    if (framed) {
+      return 'This page is inside a frame (a preview or app view) that does not pass the camera through. Open the HTML file directly in a browser tab. Meanwhile, Take photo opens your camera app for each code.';
     }
+    if (window.isSecureContext === false || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return 'Your browser hides the camera from pages opened from ' + location.protocol + '// addresses. Serve the file locally instead: in its folder run "python3 -m http.server 8000", then open http://localhost:8000/qr-chunk-scanner.html. Meanwhile, Take photo opens your camera app for each code.';
+    }
+    if ((location.protocol === 'content:' || location.protocol === 'file:') && (name === 'NotAllowedError' || name === 'SecurityError')) {
+      return 'The browser refuses the camera for a page opened from a downloaded file (' + location.protocol + '//), and it cannot show a permission prompt there. Tap Take photo to scan each code with your camera app, or open the steps below to get live scanning.';
+    }
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return 'Camera permission was denied. Allow the camera for this page (lock or camera icon in the address bar, or site settings), then press Start camera again.';
+    }
+    if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'No usable camera was found on this device.';
+    if (name === 'NotReadableError' || name === 'AbortError') return 'Another app or tab is using the camera. Close it and press Start camera again.';
+    return 'The camera could not be started (' + (name || 'unknown error') + '). Take photo opens your camera app for each code.';
+  }
+
+  async function openStream() {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
+      return await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false
       });
+    } catch (e) {
+      if (e && (e.name === 'OverconstrainedError' || e.name === 'NotFoundError')) {
+        return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+      throw e;
+    }
+  }
+
+  async function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      $('photoBtn').classList.add('primary');
+      $('camBtn').classList.remove('primary');
+      $('camHelp').hidden = false;
+      setStatus(cameraHelp(null), 'bad');
+      return;
+    }
+    try {
+      stream = await openStream();
       video.srcObject = stream;
       await video.play();
       scanning = true;
@@ -496,10 +578,10 @@
       raf = requestAnimationFrame(tick);
     } catch (e) {
       stopCamera();
-      var blocked = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
-      setStatus(blocked
-        ? 'Camera access was blocked. Use Take photo or Choose images instead, or allow the camera for this page and try again.'
-        : 'The camera could not be started (' + ((e && e.name) || 'unknown error') + '). Use Take photo or Choose images instead.', 'bad');
+      $('photoBtn').classList.add('primary');
+      $('camBtn').classList.remove('primary');
+      $('camHelp').hidden = false;
+      setStatus(cameraHelp(e), 'bad');
     }
   }
   function stopCamera() {
@@ -554,7 +636,7 @@
     if (dups) parts.push(dups + ' already read, skipped.');
     if (none.length) parts.push('No readable QR code in ' + none.slice(0, 3).join(', ') + (none.length > 3 ? ' and ' + (none.length - 3) + ' more' : '') + '.');
     setStatus(parts.join(' '), none.length && !added ? 'bad' : (added ? 'ok' : 'warn'));
-    if (added) hideResult();
+    if (added) { beep(); hideResult(); }
   }
 
   /* ---------- Done: build and save the file ---------- */
@@ -632,9 +714,9 @@
   }
 
   /* ---------- wiring ---------- */
-  $('camBtn').addEventListener('click', function () { if (scanning) { stopCamera(); setStatus('Camera stopped.', 'idle'); } else startCamera(); });
-  $('photoBtn').addEventListener('click', function () { $('photoInput').click(); });
-  $('filesBtn').addEventListener('click', function () { $('filesInput').click(); });
+  $('camBtn').addEventListener('click', function () { unlockAudio(); if (scanning) { stopCamera(); setStatus('Camera stopped.', 'idle'); } else startCamera(); });
+  $('photoBtn').addEventListener('click', function () { unlockAudio(); $('photoInput').click(); });
+  $('filesBtn').addEventListener('click', function () { unlockAudio(); $('filesInput').click(); });
   $('photoInput').addEventListener('change', function (e) { var f = e.target.files; scanFiles(f).then(function () { e.target.value = ''; }); });
   $('filesInput').addEventListener('change', function (e) { var f = e.target.files; scanFiles(f).then(function () { e.target.value = ''; }); });
   $('doneBtn').addEventListener('click', finish);
@@ -665,7 +747,14 @@
   var restored = restore();
   render();
   if (restored) setStatus('Restored ' + restored + (restored === 1 ? ' code' : ' codes') + ' from your last session. Clear all starts over.', 'idle');
-  initDetector();
+  // Ask for camera access as soon as the page opens (the browser shows its own permission prompt).
+  // Skipped inside a frame, where the camera is never passed through.
+  function autoStart() {
+    var framed = false;
+    try { framed = window.top !== window.self; } catch (x) { framed = true; }
+    if (!framed) startCamera();
+  }
+  initDetector().then(autoStart, autoStart);
 })();
 </script>
 
